@@ -2,10 +2,12 @@
 
 import * as React from "react"
 import Image from "next/image"
+import { useRouter } from "next/navigation"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import * as z from "zod"
-import { Lock, CreditCard, Smartphone } from "lucide-react"
+import { Lock, CreditCard, Smartphone, Loader2, ChevronsUpDown, Check } from "lucide-react"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -25,11 +27,15 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
+import { cn } from "@/lib/utils"
 import { CountrySelector } from "@/components/CountrySelector"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Header } from "@/components/Header"
 import { AmountInput } from "@/components/AmountInput"
+import { useCampaigns, useConstituencies, useSubConstituencies, useDonationCauses, useInitiateDonation } from "@/hooks/useDonationData"
 
 const formSchema = z.object({
   firstName: z.string().min(2, "First name is required"),
@@ -43,6 +49,7 @@ const formSchema = z.object({
   constituency: z.string({
     error: "Please select a constituency.",
   }),
+  subConstituency: z.string().optional(),
   currency: z.string(),
   amount: z.string().refine((val) => !isNaN(Number(val)) && Number(val) > 0, {
     error: "Amount must be a positive number",
@@ -56,6 +63,10 @@ const formSchema = z.object({
 })
 
 export default function DonationPage() {
+  const router = useRouter()
+  const { data: campaigns, isLoading: isLoadingCampaigns } = useCampaigns()
+  const { data: constituencies, isLoading: isLoadingConstituencies } = useConstituencies()
+  const { data: donationCauses, isLoading: isLoadingCauses } = useDonationCauses()
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
@@ -66,6 +77,7 @@ export default function DonationPage() {
       postcode: "",
       campaign: undefined,
       constituency: undefined,
+      subConstituency: undefined,
       currency: "GHS",
       amount: "",
       donationCause: undefined,
@@ -73,9 +85,65 @@ export default function DonationPage() {
     },
   })
 
-  function onSubmit(values: z.infer<typeof formSchema>) {
-    console.log(values)
-    // Here you would handle the payment logic
+  const selectedConstituencyId = form.watch("constituency")
+  const { data: subConstituencies, isLoading: isLoadingSubConstituencies } = useSubConstituencies(selectedConstituencyId)
+  const initiateDonation = useInitiateDonation()
+  const [subConstituencyOpen, setSubConstituencyOpen] = React.useState(false)
+
+  const sortedSubConstituencies = React.useMemo(() => {
+    if (!subConstituencies || !Array.isArray(subConstituencies)) return []
+    return [...subConstituencies].sort((a: any, b: any) => {
+      const orderA = a.order ?? Number.MAX_SAFE_INTEGER
+      const orderB = b.order ?? Number.MAX_SAFE_INTEGER
+      return orderA - orderB
+    })
+  }, [subConstituencies])
+
+  const selectedPaymentMethod = form.watch("paymentMethod")
+
+  async function onSubmit(values: z.infer<typeof formSchema>) {
+    try {
+      const data = await initiateDonation.mutateAsync({
+        amount: Number(values.amount),
+        email: values.email,
+        payment_method: values.paymentMethod === "card" ? "Card" : "Mobile Money",
+        campaignId: values.campaign,
+        donation_cause: values.donationCause,
+        donor: {
+          first_name: values.firstName,
+          last_name: values.lastName,
+          email: values.email,
+          phone: values.phone,
+          constituency_id: values.constituency,
+          sub_constituency_id: values.subConstituency
+        }
+      });
+
+      // Use PaystackPop with the backend's reference so webhook matches
+      // important: do NOT pass access_code here, otherwise Paystack may ignore the reference
+      const handler = (window as any).PaystackPop.setup({
+        key: process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY,
+        email: data.email,
+        amount: data.amount * 100, // Paystack expects pesewas
+        currency: values.currency || "GHS",
+        ref: data.reference, // Use 'ref' or 'reference' depending on the library, but inline.js often takes 'ref' or just 'reference'
+        reference: data.reference, // passing both to be safe, inline.js usually prioritizes reference
+        channels: [selectedPaymentMethod === "mobile_money" ? "mobile_money" : "card"],
+        onClose: () => {
+          toast.info("Payment window closed.")
+        },
+        callback: (response: any) => {
+          console.log("Payment complete:", response)
+          toast.success("Payment successful!")
+          router.push(`/thank-you?ref=${response.reference}&amount=${values.amount}&currency=${values.currency || "GHS"}`)
+        },
+      })
+      handler.openIframe()
+
+    } catch (error) {
+      console.error("Donation initiation failed", error)
+      toast.error("Failed to initiate donation. Please try again.")
+    }
   }
 
   const paymentMethod = form.watch("paymentMethod")
@@ -116,9 +184,17 @@ export default function DonationPage() {
                               </SelectTrigger>
                             </FormControl>
                             <SelectContent>
-                              <SelectItem value="annual-fund">Annual Fund 2026</SelectItem>
-                              <SelectItem value="scholarship">Scholarship Fund</SelectItem>
-                              <SelectItem value="infrastructure">Infrastructure Development</SelectItem>
+                              {isLoadingCampaigns ? (
+                                <div className="flex items-center justify-center p-2">
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                </div>
+                              ) : (
+                                campaigns?.data?.map((campaign: any) => (
+                                  <SelectItem key={campaign.id} value={campaign.id}>
+                                    {campaign.name}
+                                  </SelectItem>
+                                ))
+                              )}
                             </SelectContent>
                           </Select>
                           <FormMessage />
@@ -126,29 +202,110 @@ export default function DonationPage() {
                       )}
                     />
 
-                    <FormField
-                      control={form.control}
-                      name="constituency"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Constituency</FormLabel>
-                          <Select onValueChange={field.onChange} defaultValue={field.value}>
-                            <FormControl>
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select Constituency" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="alumni">Alumni</SelectItem>
-                              <SelectItem value="parent">Parent</SelectItem>
-                              <SelectItem value="staff">Staff</SelectItem>
-                              <SelectItem value="friend">Friend of GIS</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <FormField
+                        control={form.control}
+                        name="constituency"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Constituency</FormLabel>
+                            <Select onValueChange={(value) => {
+                              field.onChange(value);
+                              form.setValue("subConstituency", ""); // Reset sub-constituency
+                            }} defaultValue={field.value}>
+                              <FormControl>
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select Constituency" />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                {isLoadingConstituencies ? (
+                                  <div className="flex items-center justify-center p-2">
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  </div>
+                                ) : (
+                                  constituencies?.data?.map((constituency: any) => (
+                                    <SelectItem key={constituency.id} value={constituency.id}>
+                                      {constituency.name}
+                                    </SelectItem>
+                                  ))
+                                )}
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      {selectedConstituencyId && (
+                        <FormField
+                          control={form.control}
+                          name="subConstituency"
+                          render={({ field }) => (
+                            <FormItem className="flex flex-col">
+                              <FormLabel>Sub-Constituency</FormLabel>
+                              <Popover open={subConstituencyOpen} onOpenChange={setSubConstituencyOpen}>
+                                <PopoverTrigger asChild>
+                                  <FormControl>
+                                    <Button
+                                      variant="outline"
+                                      role="combobox"
+                                      aria-expanded={subConstituencyOpen}
+                                      className={cn(
+                                        "w-full justify-between font-normal",
+                                        !field.value && "text-muted-foreground"
+                                      )}
+                                      disabled={isLoadingSubConstituencies}
+                                    >
+                                      {isLoadingSubConstituencies ? (
+                                        <span className="flex items-center gap-2">
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          Loading...
+                                        </span>
+                                      ) : field.value ? (
+                                        sortedSubConstituencies.find((sub: any) => sub.id === field.value)?.name
+                                      ) : (
+                                        "Search sub-constituency..."
+                                      )}
+                                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                    </Button>
+                                  </FormControl>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+                                  <Command>
+                                    <CommandInput placeholder="Search sub-constituency..." />
+                                    <CommandList>
+                                      <CommandEmpty>No sub-constituency found.</CommandEmpty>
+                                      <CommandGroup>
+                                        {sortedSubConstituencies.map((sub: any) => (
+                                          <CommandItem
+                                            key={sub.id}
+                                            value={sub.name}
+                                            onSelect={() => {
+                                              field.onChange(sub.id)
+                                              setSubConstituencyOpen(false)
+                                            }}
+                                          >
+                                            <Check
+                                              className={cn(
+                                                "mr-2 h-4 w-4",
+                                                field.value === sub.id ? "opacity-100" : "opacity-0"
+                                              )}
+                                            />
+                                            {sub.name}
+                                          </CommandItem>
+                                        ))}
+                                      </CommandGroup>
+                                    </CommandList>
+                                  </Command>
+                                </PopoverContent>
+                              </Popover>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
                       )}
-                    />
+                    </div>
                   </div>
 
                   {/* Personal Info */}
@@ -250,9 +407,17 @@ export default function DonationPage() {
                               </SelectTrigger>
                             </FormControl>
                             <SelectContent>
-                              <SelectItem value="general">General Support</SelectItem>
-                              <SelectItem value="library">Library Fund</SelectItem>
-                              <SelectItem value="sports">Sports Center</SelectItem>
+                              {isLoadingCauses ? (
+                                <div className="flex items-center justify-center p-2">
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                </div>
+                              ) : (
+                                donationCauses?.data?.map((cause: any) => (
+                                  <SelectItem key={cause.id} value={cause.id}>
+                                    {cause.name}
+                                  </SelectItem>
+                                ))
+                              )}
                             </SelectContent>
                           </Select>
                           <FormMessage />
@@ -370,8 +535,15 @@ export default function DonationPage() {
                       Payments are secured and encrypted.
                     </div>
 
-                    <Button type="submit" className="w-full text-lg h-12 shadow-lg shadow-primary/20">
-                      Pay {form.watch("amount") ? `GHS ${Number(form.watch("amount")).toFixed(2)}` : ""}
+                    <Button type="submit" disabled={initiateDonation.isPending} className="w-full text-lg h-12 shadow-lg shadow-primary/20">
+                      {initiateDonation.isPending ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Processing...
+                        </>
+                      ) : (
+                        `Pay ${form.watch("amount") ? `GHS ${Number(form.watch("amount")).toFixed(2)}` : ""}`
+                      )}
                     </Button>
                   </CardContent>
                 </Card>
