@@ -18,6 +18,10 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "GIS Donations",
   description: "Ghana International School Donation Portal",
+  icons: {
+    icon: "/favicon/favicon.webp",
+    apple: "/favicon/favicon-152.webp",
+  },
 };
 
 export default function RootLayout({
