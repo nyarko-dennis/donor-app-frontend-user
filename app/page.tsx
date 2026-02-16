@@ -115,7 +115,7 @@ export default function DonationPage() {
           email: values.email,
           phone: values.phone,
           constituency_id: values.constituency,
-          sub_constituency_id: values.subConstituency
+          ...(values.subConstituency ? { sub_constituency_id: values.subConstituency } : {})
         }
       });
 
