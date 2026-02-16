@@ -237,7 +237,7 @@ export default function DonationPage() {
                         )}
                       />
 
-                      {selectedConstituencyId && (
+                      {selectedConstituencyId && sortedSubConstituencies.length > 0 && (
                         <FormField
                           control={form.control}
                           name="subConstituency"
